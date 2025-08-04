@@ -6,15 +6,14 @@
 #' @description
 #' `r lifecycle::badge("stable")`<br>
 #' <br>
-#' This function supports the conduct of title and abstract screening with GPT API models in R.
-#' Specifically, it allows the user to draw on GPT-3.5, GPT-4, GPT-4o, GPT-4o-mini, and fine-tuned models.
+#' This function supports the conduct of title and abstract screening with multiple LLM providers in R.
+#' It allows the user to draw on models from OpenAI (GPT-3.5, GPT-4, GPT-4o, GPT-4o-mini), 
+#' Anthropic (Claude), Google (Gemini), and other providers through the ellmer package.
 #' The function allows to run title and abstract screening across multiple prompts and with
 #' repeated questions to check for consistency across answers. All of which can be done in parallel.
-#' The function draws on the newly developed function calling which is called via the
-#' tools argument in the request body. This is the main different between [tabscreen_gpt.tools()]
-#' and [tabscreen_gpt.original()]. Function calls ensure more reliable and consistent responses to ones
-#' requests. See [Vembye et al. (2024)](https://osf.io/preprints/osf/yrhzm)
-#' for guidance on how adequately to conduct title and abstract screening with GPT models.
+#' The function supports structured output to ensure more reliable and consistent responses.
+#' See [Vembye et al. (2024)](https://osf.io/preprints/osf/yrhzm)
+#' for guidance on how adequately to conduct title and abstract screening with LLM models.
 #'
 #' @references Vembye, M. H., Christensen, J., Mølgaard, A. B., & Schytt, F. L. W. (2024)
 #'   \emph{GPT API Models Can Function as Highly Reliable Second Screeners of Titles and Abstracts in Systematic Reviews:
@@ -30,9 +29,9 @@
 #'
 #' @template common-arg
 #' @param model Character string with the name of the completion model. Can take
-#'   multiple models. Default is the latest `"gpt-4o-mini"`.
-#'   Find available model at
-#' \url{https://platform.openai.com/docs/models/model-endpoint-compatibility}.
+#'   multiple models. For ellmer support, use format "provider/model" (e.g., "anthropic/claude-3-sonnet",
+#'   "google/gemini-1.5-pro"). For backwards compatibility, models without provider prefix default to OpenAI.
+#'   Default is `"gpt-4o-mini"`. Available models can be found using [get_ellmer_models()].
 #' @param role Character string indicating the role of the user. Default is `"user"`.
 #' @param tools This argument allows this user to apply customized functions.
 #' See \url{https://platform.openai.com/docs/api-reference/chat/create#chat-create-tools}.
@@ -101,6 +100,9 @@
 #'   10 iterations for gpt-3.5 models and more than 1 iteration for gpt-4 models other than gpt-4o-mini.
 #'   This argument is developed to avoid the conduct of wrong and extreme sized screening.
 #'   Default is `FALSE`.
+#' @param use_ellmer Logical indicating whether to use the ellmer package for LLM requests.
+#'   When `TRUE`, enables support for multiple LLM providers (OpenAI, Anthropic, Google, etc.).
+#'   When `FALSE`, uses the legacy httr2-based implementation (OpenAI only). Default is `TRUE`.
 #' @param fine_tuned Logical indicating whether a fine-tuned model is used. Default is `FALSE`.
 #' @param ... Further argument to pass to the request body.
 #'   See \url{https://platform.openai.com/docs/api-reference/chat/create}.
@@ -111,7 +113,7 @@
 #'    max_seconds = NULL, is_transient = gpt_is_transient, backoff = NULL,
 #'    after = NULL, rpm = 10000, reps = 1, seed_par = NULL, progress = TRUE,
 #'    decision_description = FALSE, messages = TRUE, incl_cutoff_upper = NULL,
-#'    incl_cutoff_lower = NULL, force = FALSE, fine_tuned = FALSE, ...)
+#'    incl_cutoff_lower = NULL, force = FALSE, use_ellmer = TRUE, fine_tuned = FALSE, ...)
 #'
 #'tabscreen_gpt(data, prompt, studyid, title, abstract,
 #'    model = "gpt-4o-mini", role = "user", tools = NULL, tool_choice = NULL, top_p = 1,
@@ -119,7 +121,7 @@
 #'    max_seconds = NULL, is_transient = gpt_is_transient, backoff = NULL,
 #'    after = NULL, rpm = 10000, reps = 1, seed_par = NULL, progress = TRUE,
 #'    decision_description = FALSE, messages = TRUE, incl_cutoff_upper = NULL,
-#'    incl_cutoff_lower = NULL, force = FALSE, fine_tuned = FALSE, ...)
+#'    incl_cutoff_lower = NULL, force = FALSE, use_ellmer = TRUE, fine_tuned = FALSE, ...)
 #'
 #' @return An object of class `'gpt'`. The object is a list containing the following
 #' datasets and components:
@@ -272,6 +274,7 @@ tabscreen_gpt <- tabscreen_gpt.tools <- function(
   incl_cutoff_upper = NULL,
   incl_cutoff_lower = NULL,
   force = FALSE,
+  use_ellmer = TRUE,
   fine_tuned = FALSE,
   ...
 ){
@@ -290,8 +293,27 @@ tabscreen_gpt <- tabscreen_gpt.tools <- function(
   }
 
   # Stop if wrong models are called
-  if (!fine_tuned){
+  if (!fine_tuned && !use_ellmer){
     if(any(!model %in% model_prizes$model)) stop("Unknown gpt model(s) used - check model name(s).")
+  } else if (!fine_tuned && use_ellmer) {
+    # For ellmer, validate model format and availability
+    for (model_spec in model) {
+      parsed <- parse_model_string(model_spec)
+      provider <- parsed$provider
+      model_name <- parsed$model
+      
+      # Check if provider is supported
+      available_providers <- get_ellmer_providers()
+      if (!provider %in% available_providers) {
+        stop("Provider '", provider, "' is not available. Available providers: ", paste(available_providers, collapse = ", "))
+      }
+      
+      # Check if model is supported for the provider
+      available_models <- get_ellmer_models(provider)
+      if (!model_name %in% available_models) {
+        stop("Model '", model_name, "' is not available for provider '", provider, "'. Available models: ", paste(available_models, collapse = ", "))
+      }
+    }
   }
 
   # Ensuring that users do not conduct wrong screening
@@ -409,6 +431,7 @@ tabscreen_gpt <- tabscreen_gpt.tools <- function(
       incl_cutoff_upper = incl_cutoff_upper,
       incl_cutoff_lower = incl_cutoff_lower,
       force = force,
+      use_ellmer = use_ellmer,
       fine_tuned = fine_tuned,
       ...
     )
@@ -533,7 +556,7 @@ tabscreen_gpt <- tabscreen_gpt.tools <- function(
 
     # Calculating the approximate price using the helper function price_gpt()
 
-    if(!fine_tuned) {
+    if(!fine_tuned && !use_ellmer) {
 
     app_price_dat <- .price_gpt(question_dat)
     app_price <- sum(app_price_dat$total_price_dollar, na.rm = TRUE)
@@ -559,7 +582,11 @@ tabscreen_gpt <- tabscreen_gpt.tools <- function(
       app_price <- NULL
 
       if (messages){
-        message(paste0("* Cannot approximate the price of the screening since one or more non-standard models are used."))
+        if (use_ellmer) {
+          message(paste0("* Cannot approximate the price when using ellmer - pricing varies by provider and may not be available for all models."))
+        } else {
+          message(paste0("* Cannot approximate the price of the screening since one or more non-standard models are used."))
+        }
       }
     }
 
@@ -595,12 +622,15 @@ tabscreen_gpt <- tabscreen_gpt.tools <- function(
       dplyr::select(question, model_gpt = model, topp, iterations, req_per_min)
 
 
+    # Choose engine function based on use_ellmer parameter
+    engine_function <- if (use_ellmer) .ellmer_rep_gpt_engine else .rep_gpt_engine
+
     answer_dat <-
       question_dat |>
       dplyr::mutate(
         res = furrr::future_pmap(
           .l = params,
-          .f = .rep_gpt_engine,
+          .f = engine_function,
           role_gpt = role,
           tool = tools,
           t_choice = tool_choice,
@@ -641,7 +671,7 @@ tabscreen_gpt <- tabscreen_gpt.tools <- function(
     #.............................
 
     # Adding price data
-    price_dat <- if (token_info && !fine_tuned) .price_gpt(answer_dat) else NULL
+    price_dat <- if (token_info && !fine_tuned && !use_ellmer) .price_gpt(answer_dat) else NULL
     price <- if (!is.null(price_dat)) sum(price_dat$total_price_dollar, na.rm = TRUE) else NULL
 
     #.........................................................................
@@ -690,8 +720,8 @@ tabscreen_gpt <- tabscreen_gpt.tools <- function(
       run_date = Sys.Date()
     )
 
-    # If token info is not wanted or fine tuned model used
-    if (fine_tuned || !token_info) res[["price_data"]] <- res[["price_dollar"]] <- NULL
+    # If token info is not wanted or fine tuned model used or ellmer is used
+    if (fine_tuned || !token_info || use_ellmer) res[["price_data"]] <- res[["price_dollar"]] <- NULL
 
     # If no screening errors
     if (n_error == 0) res[["error_data"]] <- NULL
