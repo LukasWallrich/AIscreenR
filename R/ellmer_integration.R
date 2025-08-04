@@ -5,10 +5,19 @@
 #' @importFrom tibble tibble
 #' @importFrom jsonlite fromJSON
 
+# Cache for provider availability to improve performance
+.ellmer_provider_cache <- new.env(parent = emptyenv())
+
 #' Get available LLM providers through ellmer
 #' @return Character vector of available providers
 #' @export
 get_ellmer_providers <- function() {
+  # Check cache first
+  cache_key <- "available_providers"
+  if (exists(cache_key, envir = .ellmer_provider_cache)) {
+    return(get(cache_key, envir = .ellmer_provider_cache))
+  }
+  
   providers <- c("openai")  # Always available through legacy implementation
   
   # Check if ellmer is available and add additional providers
@@ -26,7 +35,12 @@ get_ellmer_providers <- function() {
     })
   }
   
-  unique(providers)
+  providers <- unique(providers)
+  
+  # Cache the result
+  assign(cache_key, providers, envir = .ellmer_provider_cache)
+  
+  providers
 }
 
 #' Get available models for a given provider
@@ -46,8 +60,25 @@ get_ellmer_models <- function(provider = "openai") {
 #' @param model Character string that may contain provider prefix (e.g., "anthropic/claude-3-sonnet")
 #' @return List with provider and model components
 parse_model_string <- function(model) {
+  # Input validation
+  if (!is.character(model) || length(model) != 1 || nchar(model) == 0) {
+    stop("Model must be a non-empty character string")
+  }
+  
   if (grepl("/", model)) {
     parts <- strsplit(model, "/", fixed = TRUE)[[1]]
+    
+    # Validate that we have exactly 2 parts after splitting
+    if (length(parts) != 2 || nchar(parts[1]) == 0 || nchar(parts[2]) == 0) {
+      stop("Invalid model format. Expected 'provider/model', got: ", model)
+    }
+    
+    # Validate provider is supported
+    supported_providers <- c("openai", "anthropic", "google")
+    if (!parts[1] %in% supported_providers) {
+      stop("Unsupported provider: ", parts[1], ". Supported providers: ", paste(supported_providers, collapse = ", "))
+    }
+    
     list(provider = parts[1], model = parts[2])
   } else {
     # Default to openai for backwards compatibility
@@ -120,36 +151,88 @@ parse_model_string <- function(model) {
     )
   }
   
-  # Create a safe fallback that uses the original httr2 implementation for now
-  # until ellmer package structure is confirmed
+  # Make actual ellmer API calls based on provider
   result <- tryCatch({
-    if (provider == "openai") {
-      # For OpenAI, fall back to the original implementation
-      # This maintains compatibility while ellmer is being integrated
-      .gpt_engine(
-        body = body,
-        RPM = RPM,
-        timeinf = timeinf,
-        tokeninf = tokeninf,
-        key = key,
-        max_t = max_t,
-        max_s = max_s,
-        is_trans = is_trans,
-        back = back,
-        aft = aft
-      )
+    # Prepare system and user messages for ellmer
+    system_message <- "You are a helpful AI assistant that provides structured JSON responses."
+    user_message <- question
+    
+    # Convert schema to JSON string for structured output
+    schema_json <- jsonlite::toJSON(schema, auto_unbox = TRUE, pretty = TRUE)
+    full_prompt <- paste0(
+      user_message, 
+      "\n\nPlease respond with valid JSON that matches this schema:\n",
+      schema_json
+    )
+    
+    # Make provider-specific API calls
+    response <- switch(provider,
+      "openai" = {
+        # Use ellmer for OpenAI calls to maintain consistency
+        ellmer::chat_openai(
+          system_prompt = system_message,
+          user_prompt = full_prompt,
+          model = model_name,
+          api_key = key
+        )
+      },
+      "anthropic" = {
+        # Validate API key exists
+        if (is.null(key) || key == "") {
+          stop("Anthropic API key is required but not provided")
+        }
+        ellmer::chat_anthropic(
+          system_prompt = system_message,
+          user_prompt = full_prompt,
+          model = model_name,
+          api_key = key
+        )
+      },
+      "google" = {
+        # Validate API key exists  
+        if (is.null(key) || key == "") {
+          stop("Google API key is required but not provided")
+        }
+        ellmer::chat_google(
+          system_prompt = system_message,
+          user_prompt = full_prompt,
+          model = model_name,
+          api_key = key
+        )
+      },
+      stop("Unsupported provider: ", provider)
+    )
+    
+    # Extract the content from ellmer response
+    if (is.list(response) && !is.null(response$content)) {
+      response$content
+    } else if (is.character(response)) {
+      response
     } else {
-      # For non-OpenAI providers, return a structured error indicating the need for ellmer
-      stop("Provider '", provider, "' requires ellmer package integration. Please ensure ellmer is properly installed and configured.")
+      stop("Unexpected response format from ellmer")
     }
+    
   }, error = function(e) {
-    tibble::tibble(
-      decision_gpt = paste("Error:", as.character(e)),
-      decision_binary = NA_real_,
-      detailed_description = if(detailed) NA_character_ else NULL,
-      prompt_tokens = if(tokeninf) NA_real_ else NULL,
-      completion_tokens = if(tokeninf) NA_real_ else NULL,
-      submodel = model_name
+    # Return structured error response
+    error_msg <- as.character(e)
+    
+    # Create appropriate error response based on error type
+    if (grepl("API key", error_msg, ignore.case = TRUE)) {
+      error_msg <- paste0("API key error for ", provider, ": ", error_msg)
+    } else if (grepl("rate limit", error_msg, ignore.case = TRUE)) {
+      error_msg <- paste0("Rate limit exceeded for ", provider, ": ", error_msg)
+    } else if (grepl("network", error_msg, ignore.case = TRUE)) {
+      error_msg <- paste0("Network error for ", provider, ": ", error_msg)
+    } else {
+      error_msg <- paste0("Error with ", provider, ": ", error_msg)
+    }
+    
+    # Return error as structured response
+    list(
+      error = TRUE,
+      message = error_msg,
+      provider = provider,
+      model = model_name
     )
   })
   

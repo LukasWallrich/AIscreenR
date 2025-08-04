@@ -8,16 +8,22 @@
 #' @return Data frame with columns: provider, model, full_name (provider/model format)
 #' @export
 #' @examples
-#' \dontrun{
 #' # List all available models
-#' list_available_models()
+#' \donttest{
+#' models <- list_available_models()
+#' head(models)
+#' }
 #' 
 #' # List only OpenAI models  
-#' list_available_models("openai")
-#' 
-#' # List only Anthropic models
-#' list_available_models("anthropic")
+#' \donttest{
+#' openai_models <- list_available_models("openai")
 #' }
+#' 
+#' # Examples of expected structure (without API calls)
+#' # The function returns a data frame with columns:
+#' # - provider: "openai", "anthropic", "google"
+#' # - model: model name like "gpt-4o-mini", "claude-3-sonnet"
+#' # - full_name: "provider/model" format for cross-provider use
 list_available_models <- function(provider = NULL) {
   
   # Get available providers
@@ -41,7 +47,22 @@ list_available_models <- function(provider = NULL) {
   for (prov in available_providers) {
     if (prov == "openai" && !requireNamespace("ellmer", quietly = TRUE)) {
       # Fallback to traditional models if ellmer not available
-      models <- model_prizes$model[model_prizes$model != "o1-preview" & model_prizes$model != "o1-mini"]
+      # Safely access model_prizes with existence and structure checks
+      models <- tryCatch({
+        if (exists("model_prizes", envir = .GlobalEnv) && 
+            is.data.frame(model_prizes) && 
+            "model" %in% names(model_prizes)) {
+          # Filter out o1 models that may not work with current setup
+          available_models <- model_prizes$model
+          available_models[!available_models %in% c("o1-preview", "o1-mini")]
+        } else {
+          # Fallback if model_prizes not available
+          c("gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo")
+        }
+      }, error = function(e) {
+        # Ultimate fallback
+        c("gpt-4o-mini", "gpt-4o")
+      })
     } else {
       models <- tryCatch({
         get_ellmer_models(prov)
@@ -84,9 +105,16 @@ list_available_models <- function(provider = NULL) {
 #' @return Character vector of recommended model names
 #' @export
 #' @examples
-#' \dontrun{
-#' get_recommended_models()
+#' # Get recommended models for systematic reviews
+#' \donttest{
+#' recommended <- get_recommended_models()
+#' print(recommended)
 #' }
+#' 
+#' # Example of typical output:
+#' # [1] "gpt-4o-mini"                        "gpt-4o"                           
+#' # [3] "anthropic/claude-3-5-sonnet-20241022" "anthropic/claude-3-haiku-20240307"
+#' # [5] "google/gemini-1.5-flash"
 get_recommended_models <- function() {
   recommended <- c(
     "gpt-4o-mini",  # Best value for money (OpenAI)
@@ -111,9 +139,23 @@ get_recommended_models <- function() {
 #' @return Data frame with model comparison information
 #' @export
 #' @examples
-#' \dontrun{
-#' show_model_comparison()
+#' # Show comparison of available models
+#' \donttest{
+#' comparison <- show_model_comparison()
+#' print(comparison)
 #' }
+#' 
+#' # Show comparison with pricing (for OpenAI models)
+#' \donttest{
+#' comparison_with_pricing <- show_model_comparison(include_pricing = TRUE)
+#' }
+#' 
+#' # Expected columns in output:
+#' # - provider: LLM provider name
+#' # - model: Model name
+#' # - full_name: Full provider/model specification
+#' # - recommended: Whether model is recommended for screening
+#' # - use_case: Suggested use case for the model
 show_model_comparison <- function(include_pricing = FALSE) {
   
   models <- list_available_models()
@@ -136,12 +178,24 @@ show_model_comparison <- function(include_pricing = FALSE) {
   
   # Add pricing if requested and available
   if (include_pricing && "openai" %in% models$provider) {
-    pricing_data <- model_prizes |>
-      dplyr::select(model, input_price_1k_token, output_price_1k_token) |>
-      dplyr::rename_with(~paste0("openai_", .), -model)
+    pricing_data <- tryCatch({
+      if (exists("model_prizes", envir = .GlobalEnv) && 
+          is.data.frame(model_prizes) && 
+          all(c("model", "input_price_1k_token", "output_price_1k_token") %in% names(model_prizes))) {
+        model_prizes |>
+          dplyr::select(model, input_price_1k_token, output_price_1k_token) |>
+          dplyr::rename_with(~paste0("openai_", .), -model)
+      } else {
+        NULL
+      }
+    }, error = function(e) {
+      NULL
+    })
     
-    models <- models |>
-      dplyr::left_join(pricing_data, by = c("model" = "model"))
+    if (!is.null(pricing_data)) {
+      models <- models |>
+        dplyr::left_join(pricing_data, by = c("model" = "model"))
+    }
   }
   
   # Remove duplicates and arrange

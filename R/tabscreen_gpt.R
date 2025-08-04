@@ -296,20 +296,26 @@ tabscreen_gpt <- tabscreen_gpt.tools <- function(
   if (!fine_tuned && !use_ellmer){
     if(any(!model %in% model_prizes$model)) stop("Unknown gpt model(s) used - check model name(s).")
   } else if (!fine_tuned && use_ellmer) {
-    # For ellmer, validate model format and availability
+    # For ellmer, validate model format and availability with caching
+    available_providers <- get_ellmer_providers()  # Cached
+    provider_models_cache <- list()  # Cache model lists per provider
+    
     for (model_spec in model) {
       parsed <- parse_model_string(model_spec)
       provider <- parsed$provider
       model_name <- parsed$model
       
       # Check if provider is supported
-      available_providers <- get_ellmer_providers()
       if (!provider %in% available_providers) {
         stop("Provider '", provider, "' is not available. Available providers: ", paste(available_providers, collapse = ", "))
       }
       
-      # Check if model is supported for the provider
-      available_models <- get_ellmer_models(provider)
+      # Check if model is supported for the provider (with caching)
+      if (!provider %in% names(provider_models_cache)) {
+        provider_models_cache[[provider]] <- get_ellmer_models(provider)
+      }
+      available_models <- provider_models_cache[[provider]]
+      
       if (!model_name %in% available_models) {
         stop("Model '", model_name, "' is not available for provider '", provider, "'. Available models: ", paste(available_models, collapse = ", "))
       }
